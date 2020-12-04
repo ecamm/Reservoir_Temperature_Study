@@ -1,0 +1,524 @@
+---
+title: "Glenmore Reservoir Temperature Study"
+author: "Eric Camm"
+date: "`r Sys.Date()`"
+output:
+  bookdown::html_document2:
+    theme: journal
+    code_download: true
+    toc: yes
+    code_folding: hide
+---
+
+```{r Packages, message=F, warning=F, echo=F}
+library(tidyverse) 
+library(lubridate) ##datetime
+library(here) ##directory management
+library(bookdown) ##report template
+library(janitor) ##cleaning variables
+library(fs) ##file management
+library(plotly) ##interactive plots
+library(glue) ##pasting objects
+library(MBA) #interpretation for depth/temp
+library(reshape2)
+library(viridis)
+```
+
+```{r TEMPERATURE DATA, echo=T, warning=F, message=F, results=F}
+## find directory with depth/temperature data
+## imports all csv files
+fs::dir_ls("data\\tempproject")
+
+csv_files <- fs::dir_ls("data\\tempproject", regexp = "\\.csv$")
+
+colnames <- c("measurement", "date_time", "temperature")
+
+```
+
+```{r Consolidate function and cleaning, echo=T, message=F, warning=F}
+## function to read in files
+read_and_add <- function(file) {
+  dat <- read_csv(file, skip = 2, col_names = colnames)
+  dat
+}
+
+## purrr loops over each file and applies function + cleaning steps in pipeline
+depth_temp <- map_dfr(
+  .x = csv_files,
+  .id = "source",
+  .f = read_and_add
+) %>%
+  separate(source, c("first", "second", "depth", sep = "/")) %>%
+  select(-first, -second, -`/`) %>%
+  mutate(depth = as.numeric(str_replace_all(depth, "M", ""))) %>%
+  mutate(date_time = mdy_hms(date_time)) %>%
+  arrange(depth)
+
+```
+  
+```{r LAKEWOOD RAIN DATA, echo=T, warning=F, message=F}
+##use if reading from manually downloaded Lakewood data
+# rain <- read.csv(here("data","lincolnpark.csv"), skip = 8) %>% 
+#   rename(Date = yyyy.mm.dd.hh.mm.ss, cumulative_mm = mm, mm = mm.1) %>% 
+#   mutate(rain = mm - lag(mm, default = first(mm))) %>% 
+#   mutate(rain = if_else(rain < 0, 0, rain)) %>% 
+#   select(Date,cumulative_mm, mm, rain) %>%
+#   mutate(day = mdy_hm(Date)) %>%
+#   mutate(date_parsed = parse_date_time(day,'%Y-%m-%d %H:%M %s',tz = "America/Edmonton")) %>%
+#   arrange(date_parsed)
+# rain_hourly <- rain %>% 
+#   group_by(date_time = floor_date(day, "1 hour")) %>% 
+#   summarize(rain = sum(rain))
+```
+
+
+```{r OPEN DATA PORTAL RAIN DATA, echo=T, warning=F, message=F}
+##querying rain data from City of Calgary - Open Data Portal
+library(RSocrata)
+# url <- "https://data.calgary.ca/api/odata/v4/d9kv-swk3"
+# rain_socrata <- read.socrata(url)
+# saveRDS(rain_socrata, "rain_query")
+
+#use to avoid querying each time
+rain_socrata <- readRDS("rain_query")
+rain_socrata <- rain_socrata %>%
+  rename("date_time" = "timestamp")
+
+rain_socrata$date_time <- ymd_hms(rain_socrata$date_time)
+rain_socrata <- rain_socrata %>%
+  select(channel:rainfall)
+
+rain_socrata_hourly <- rain_socrata %>%
+  mutate(date_time = floor_date(date_time, "1 hour")) %>%
+  group_by(channel, name, year, date_time) %>%
+  summarize(rain = sum(rainfall))
+```
+
+
+```{r PI DATA, echo=T, warning=F, message=F}
+##currently manually querying PI data through PIDATALINK
+pi_data <- read_csv(here("data", "reservoir_pi_data.csv"))
+pi_data$date_time <- mdy_hm(pi_data$date_time)
+pi_data$`GM RWPS LAKE LVL (GEODECTIC)(m)` <- as.numeric(pi_data$`GM RWPS LAKE LVL (GEODECTIC)(m)`)
+
+pi_data <- pivot_longer(pi_data,
+  cols = c(-date_time), names_to = "pi_tag",
+  values_to = "pi_value"
+)
+```
+
+
+```{r reservoir level data, echo=F, message=F}
+# level <- read_csv(here("data", "reservoir_level.csv"), col_names = c("date_time", "level_m"))
+# 
+# level$date_time <- mdy_hm(level$date_time)
+# level$level_m <- as.numeric(level$level_m)
+# 
+# df_joined <- left_join(df, level, by = "date_time")
+# df_joined <- left_join(df_joined, rain_hourly, by = "date_time")
+# 
+# df_long <- df_joined %>% 
+#   pivot_longer(cols = temperature:level_m,
+#                names_to = "variable",
+#                values_to = "value")
+
+```
+
+```{r WEATHERCAN QUERY, echo=T, warning=F, message=F}
+##weathercan package pulls Environment Canada data
+library(weathercan)
+calgary <- stations_search("Calgary") ##find desired station_id. Calgary Itn'l and Springbank
+airtemp_query <- weather_dl(station_ids = c(27211,52200), start = "2020-01-01", 
+                            end = Sys.Date())
+airtemp_query <- airtemp_query %>% 
+  rename("date_time" = "time")
+```
+
+
+```{r AIR TEMPERATURE DATA, echo=F, warning=F, message=F}
+#### AIR TEMPERATURE DATA####
+# yyc_temp1 <- read_csv(here("data", "en_climate_hourly_AB_3031094_05-2020_P1H.csv"))
+# yyc_temp2 <- read_csv(here("data", "en_climate_hourly_AB_3031094_06-2020_P1H.csv"))
+# yyc_temp2$`Date/Time` <- mdy_hm(yyc_temp2$`Date/Time`)
+# yyc_temp <- rbind(yyc_temp1, yyc_temp2)
+# 
+# 
+# springbank_temp1 <- read_csv(here("data", "en_climate_hourly_AB_3031109_05-2020_P1H.csv"))
+# springbank_temp2 <- read_csv(here("data", "en_climate_hourly_AB_3031109_06-2020_P1H.csv"))
+# springbank_temp2$`Date/Time` <- mdy_hm(springbank_temp2$`Date/Time`)
+# springbank_temp <- rbind(springbank_temp1, springbank_temp2)
+# 
+# springbank_temp <- springbank_temp %>%
+#   rename("date_time" = "Date/Time")
+# springbank_temp <- springbank_temp %>%
+#   clean_names()
+
+# airport_temp <- rbind(yyc_temp, springbank_temp)
+# airport_temp <- airport_temp %>%
+#   rename("date_time" = "Date/Time")
+#
+# airport_temp$date_time <- mdy_hm(airport_temp$date_time)
+# airport_temp <- airport_temp %>%
+#   clean_names()
+
+library(weathercan)
+calgary <- stations_search("Calgary") ## find desired station_id. Calgary Itn'l and Springbank
+airtemp_query <- weather_dl(
+  station_ids = c(27211, 52200), start = "2020-01-01",
+  end = Sys.Date()
+)
+airtemp_query <- airtemp_query %>%
+  rename("date_time" = "time") %>%
+  rename("air_temp" = "temp")
+
+```
+
+```{r joining dataframes, echo=T}
+#### JOINED DATAFRAMES####
+df_joined <- left_join(depth_temp, pi_data, by = "date_time")
+df_joined <- left_join(df_joined, airtemp_query, by = "date_time")
+df_joined <- left_join(df_joined, rain_socrata_hourly, by = "date_time")
+df_joined <- df_joined %>%
+  clean_names() %>% 
+  filter(date_time >= "2020-05-29") %>% 
+  filter(temperature <= 100) #data cleaning - 42 erroneous temperature datum of 300-500deg
+```
+
+```{r scales, echo=F}
+## scales
+xmin <- min(df_joined$date_time)
+xmax <- max(df_joined$date_time)
+```
+
+# Depth / Temperature 
+```{r DEPTH/TEMP PLOT, echo=T, warning=F, message=F}
+temp_plot <- ggplot(df_joined, aes(x = date_time, y = temperature, group = depth)) +
+  geom_line(aes(color = desc(depth))) +
+  theme_bw() +
+  labs(
+    color = "Depth (m)",
+    subtitle = "Glenmore Reservoir Temperature Study",
+    x = "",
+    y = "Temperature (°C)"
+  ) +
+  theme(
+        legend.position = "none",
+        axis.title.y = element_text(size = 9)
+      )
+ggplotly(temp_plot, tooltip = c("x", "y", "group"))
+
+ggsave(here("output", "gm_headpond_tempstudy.png"),height = 6, width = 8, dpi = 120)
+```
+
+# Rainfall data
+```{r RAIN PLOT, echo=T, warning=F, message=F}
+rain_plot <- df_joined %>% 
+  filter(channel == 16) %>% 
+  distinct(date_time, .keep_all = T) %>% 
+  ggplot(aes(x = date_time, y = rain)) +
+  geom_col(color = "steelblue3") +
+  lims(x = c(xmin, xmax)) +
+  theme_bw() +
+  labs(
+    title = "RAIN GAUGE: LINCOLN PARK",
+    x = "",
+    y = "Rain (mm)"
+  ) + 
+  scale_y_reverse(limits = c(45, 0)) +
+      theme(
+        title = element_text(size = 9),
+        axis.text.y = element_text(size = 9)
+      )
+ggplotly(rain_plot)
+```
+
+```{r PI PLOT, echo=F}
+# pi_plot <- df_joined %>%
+#       filter(!is.na(pi_tag)) %>% 
+#       # distinct(date_time, .keep_all = T) %>%
+#       ggplot(aes(x = date_time, y = pi_value)) +
+#       geom_line() +
+#       lims(x = c(xmin, xmax)) +
+#       theme_bw() +
+#       labs(
+#         x = "",
+#         y = ""
+#       ) +
+#       theme(axis.title.y = element_text(size = 9)) +
+#   
+#   facet_wrap(~pi_tag, scales = "free", ncol = 1)
+# ggplotly(pi_plot)
+```
+
+# Reservoir Level
+```{r GM LEVEL, echo=T, warning=F, message=F}
+gm_level <- df_joined %>% 
+  filter(pi_tag == "GM RWPS LAKE LVL (GEODECTIC)(m)") %>% 
+  ggplot(aes(x = date_time, y = pi_value)) +
+      geom_line() +
+      lims(x = c(xmin, xmax)) +
+      theme_bw() +
+      labs(
+        title = "GM RWPS LAKE LVL (GEODECTIC)(m)",
+        x = "",
+        y = "(m)"
+      ) +
+      theme(axis.title.y = element_text(size = 9))
+gm_level
+```
+
+# Elbow Flow
+```{r ELBOW FLOW, echo=T, warning=F, message=F}
+elbow_flow <- df_joined %>% 
+  filter(pi_tag == "STN229 ELBOW RIVER AT SARCEE BRIDGE FLOW (m3/s)") %>% 
+  ggplot(aes(x = date_time, y = pi_value)) +
+      geom_line() +
+      lims(x = c(xmin, xmax)) +
+      theme_bw() +
+      labs(
+        title = "STN229 ELBOW RIVER AT SARCEE BRIDGE FLOW (m3/s)",
+        x = "",
+        y = "(m3/s)"
+      ) +
+      theme(axis.title.y = element_text(size = 9))
+elbow_flow
+```
+
+# Air Temperature
+```{r AIR TEMPERATURE, echo=T, warning=F, message=F}
+air_temp <- df_joined %>% 
+  mutate(air_day = floor_date(date(date_time), unit = 'days')) %>% 
+  # distinct(date_time, .keep_all = T) %>%
+  group_by(air_day) %>% 
+  summarize(min_air = min(air_temp, na.rm = T), max_air = max(air_temp, na.rm = T)) %>% 
+  ungroup() %>% 
+  ggplot() +
+  geom_line(aes(x = air_day, y = max_air), color = "orange") +
+  geom_line(aes(x = air_day, y = min_air), color = "lightblue") +
+  labs(
+    title = "Calgary Int'l Airport - Temperature",
+    y = "(deg C)",
+    x = ""
+  ) +
+  theme_bw()
+ggplotly(air_temp)
+```
+
+
+# Location Map
+```{r MAP, echo=T, warning=F, message=F}
+library(sf)
+library(mapview) ## mapping package
+mapviewOptions(legend.pos = "bottomright")
+locations <- read_csv(here("data", "shiny_map.csv")) %>%
+  clean_names() 
+  # filter(type != "Air temperature") # filtering out air temperature locations until get that working
+
+locations <- locations %>%
+  st_as_sf(coords = c("easting", "northing")) %>%
+  st_set_crs(4326)
+
+mapview::mapview(locations,
+      zcol = "type",
+      layer.name = ""
+    )
+```
+
+```{r DEPTH_TEMP MBA INTERPOLATION, echo=T, warning=F, message=F}
+##Multilevel B-spline Approximation (MBA) algorithm
+
+fs::dir_ls("data\\tempproject")
+
+csv_files <- fs::dir_ls("data\\tempproject", regexp = "\\.csv$")
+
+colnames <- c("measurement", "date_time", "temperature")
+
+read_and_add <- function(file) {
+  dat <- read_csv(file, skip = 2, col_names = colnames)
+  dat
+}
+
+## purrr loops over each file and applies function + cleaning steps in pipeline
+depth_temp <- map_dfr(
+  .x = csv_files,
+  .id = "source",
+  .f = read_and_add
+) %>%
+  separate(source, c("first", "second", "depth", sep = "/")) %>%
+  select(-first, -second, -`/`) %>%
+  mutate(depth = as.numeric(str_replace_all(depth, "M", ""))) %>%
+  mutate(date_time = mdy_hms(date_time)) %>%
+  arrange(depth)
+depth_temp <- depth_temp %>% 
+  filter(date_time >= "2020-05-29")
+
+depth_temp$date_time <- decimal_date(depth_temp$date_time) ##MBA using decimal dates
+
+##raster extrapolation and plot method using MBA (Multilevel B-Spline Approximation)
+
+mba2 <- mba.surf(depth_temp[, c("date_time", "depth", "temperature")], 100, 100)
+dimnames(mba2$xyz.est$z) <- list(mba2$xyz.est$x, mba2$xyz.est$y)
+df4 <- melt(mba2$xyz.est$z, varnames = c("date_time", "depth"), value.name = "temperature")
+
+Fig2 <-
+  ggplot(data = df4, aes(date_time, depth)) +
+  labs(title = "Glenmore Reservoir 2020", subtitle = "Depth Profile", caption = "Head Pond") +
+  xlab("") + ylab("Depth (m)") +
+  geom_raster(aes(fill = temperature), interpolate = F, hjust = 0.5, vjust = 0.5) +
+  geom_contour(aes(z = temperature)) +
+  geom_point(data = depth_temp, aes(date_time, depth), colour = "white") +
+  scale_y_reverse(breaks = seq(0, 18, by = 2)) +
+  scale_x_continuous(breaks = c(2020.4167, 2020.4986, 2020.5833, 	2020.668), labels = c(
+    "June", "July", "August",
+    "September"
+  )) +
+  scale_color_viridis(name = "Temp (\u00B0C)") +
+  theme_minimal() +
+  theme(axis.text = element_text(size = 16)) +
+  theme(axis.title = element_text(size = 16))
+ggplotly(Fig2)
+
+```
+
+```{r DEPTH_TEMP LINEAR INTERPOLATION, echo=T, warning=F, message=F}
+##source Dewey Dunnington
+##https://fishandwhistle.net/post/2019/depth-time-heatmaps/
+
+fs::dir_ls("data\\tempproject")
+
+csv_files <- fs::dir_ls("data\\tempproject", regexp = "\\.csv$")
+
+colnames <- c("measurement", "date_time", "temperature")
+
+read_and_add <- function(file) {
+  dat <- read_csv(file, skip = 2, col_names = colnames)
+  dat
+}
+
+## purrr loops over each file and applies function + cleaning steps in pipeline
+depth_temp <- map_dfr(
+  .x = csv_files,
+  .id = "source",
+  .f = read_and_add
+) %>%
+  separate(source, c("first", "second", "depth", sep = "/")) %>%
+  select(-first, -second, -`/`) %>%
+  mutate(depth = as.numeric(str_replace_all(depth, "M", ""))) %>%
+  mutate(date_time = mdy_hms(date_time)) %>%
+  arrange(depth)
+depth_temp <- depth_temp %>% 
+  filter(date_time >= "2020-05-29")
+
+##plot
+ggplot(depth_temp, aes(x = date_time, y = depth, color = temperature)) +
+  geom_point() +
+  scale_y_reverse() +
+  scale_colour_gradient2(
+    midpoint = 15, 
+    high = scales::muted("red"), 
+    low = scales::muted("blue"),
+    name = "Temp (\u00B0C)"
+  ) +
+  labs(title = "Temperature Profile", subtitle = "Discrete point data", x = "", y = "Depth (m)") +
+   coord_cartesian(expand = FALSE)
+
+estimate_temp_by_date <- function(target_date, target_depth) {
+  data_for_date <- depth_temp %>% 
+    filter(date_time == target_date) %>%
+    arrange(depth)
+  
+  # approx() is one way to do a linear interpolation
+  approx(data_for_date$depth, data_for_date$temperature, xout = target_depth)$y
+}
+
+estimate_temp_by_date(ymd("2020-07-13"), c(0, 1, 1.5, 2))
+
+temp_interp_depth <- crossing(
+  # the same dates as depth_temp
+  tibble(date_time = unique(depth_temp$date_time)),
+  # depths can now be any value
+  tibble(depth = seq(1, 18, length.out = 100))
+) %>%
+  group_by(date_time) %>%
+  mutate(temperature = estimate_temp_by_date(date_time[1], depth))
+
+ggplot(temp_interp_depth, aes(x = date_time, y = depth, color = temperature)) +
+  geom_point() +
+  scale_y_reverse() +
+  # scale_colour_gradient2(
+  #   midpoint = 15, 
+  #   high = scales::muted("red"), 
+  #   low = scales::muted("blue"),
+  #   name = "Temp (\u00B0C)"
+  # ) +
+  scale_color_viridis(name = "Temp (\u00B0C)") +
+  labs(title = "Temperature Profile", subtitle = "Depth linear interpolation", x = "", y = "Depth (m)") +
+   coord_cartesian(expand = FALSE)
+
+# create a function that will, given a depth, estimate the temp on any given day
+estimate_temp_by_depth <- function(target_depth, target_date) {
+  data_for_depth <- temp_interp_depth %>% 
+    filter(depth == target_depth) %>%
+    arrange(date_time)
+  approx(data_for_depth$date_time, data_for_depth$temperature, xout = target_date)$y
+}
+
+estimate_temp_by_depth(
+  target_depth = 1, 
+  target_date = seq(ymd_hms("2020-06-12 06:00:00"), ymd_hms("2020-06-15 06:00:00"), by = 1)
+)
+
+# estimate temperature at all depth/date combinations
+# issue with time interval, using hms dateformat leads to vector that is too large
+# orignal code uses ymd format
+temp_raster <- crossing(
+  # dates can now be any value
+  tibble(date = seq(ymd("1993-05-13"), ymd("1993-10-06"), by = 1)),
+  # depths must be the same as in temp_interp_depth
+  tibble(depth = unique(temp_interp_depth$depth))
+) %>%
+  group_by(depth) %>%
+  mutate(temp = estimate_temp_by_depth(depth[1], date))
+
+##2D smoother on multiple year data
+sonde_tbl_yearless <- depth_temp %>%
+  mutate(
+    day_in_year = as.numeric(date_time - floor_date(date_time, unit = "years"), unit = "days"),
+    date_label = ymd("2020-01-01") + day_in_year
+  )
+
+smooth_fit <- loess(
+  temperature ~ day_in_year + depth, 
+  data = sonde_tbl_yearless, 
+  span = 0.2
+)
+
+temp_raster_smooth <- crossing(
+  tibble(date = seq(ymd("2020-05-30"), ymd("2020-07-30"), by = 1)),
+  tibble(depth = seq(1, 18, length.out = 100))
+) %>%
+  mutate(
+    day_in_year = as.numeric(date - floor_date(date, unit = "years"), unit = "days"),
+    temperature = predict(
+      smooth_fit, 
+      newdata = tibble(day_in_year = day_in_year, depth = depth)
+    )
+  )
+
+
+ggplot(temp_raster_smooth, aes(x = date, y = depth, fill = temperature)) +
+  geom_raster() +
+  scale_y_reverse() +
+  scale_fill_gradient2(
+    midpoint = 15, 
+    high = scales::muted("red"), 
+    low = scales::muted("blue"),
+    name = "Temp (\u00B0C)"
+  ) +
+  labs(title = "Temperature Profile", subtitle = "2D smoothed - linear interpolation", x = "", y = "Depth (m)") +
+   coord_cartesian(expand = FALSE)
+
+```
+
+
+
